@@ -1,0 +1,69 @@
+CONFIGURAÇÃO DO SIEM — Wazuh + pfSense
+======================================
+
+Ambiente (montagem real):
+  Servidor Wazuh ....... VM Debian 13 ...... 10.10.10.13  (rede de gestão)
+  Dashboard ............ https://10.10.10.13
+  Fonte de logs ........ pfSense + Suricata . 10.10.10.1
+  Agente ............... Kali (laboratório) . 10.10.30.101
+
+--------------------------------------------------------------------
+1) SERVIDOR WAZUH — instalação all-in-one (numa VM Debian, como root)
+--------------------------------------------------------------------
+   curl -sO https://packages.wazuh.com/4.14/wazuh-install.sh
+   bash wazuh-install.sh -a
+   # No fim, guardar as credenciais de wazuh-install-files/wazuh-passwords.txt
+
+--------------------------------------------------------------------
+2) RECEÇÃO DE SYSLOG — bloco a acrescentar em /var/ossec/etc/ossec.conf
+   (bloco <remote> PRÓPRIO, separado do bloco dos agentes)
+--------------------------------------------------------------------
+   <remote>
+     <connection>syslog</connection>
+     <port>514</port>
+     <protocol>udp</protocol>
+     <allowed-ips>10.10.10.0/24</allowed-ips>
+   </remote>
+
+   # Aplicar e verificar:
+   systemctl restart wazuh-manager
+   ss -lun | grep 514        # deve mostrar 0.0.0.0:514
+
+--------------------------------------------------------------------
+3) ENVIO A PARTIR DO pfSense
+   Status -> System Logs -> Settings -> Remote Logging
+--------------------------------------------------------------------
+   Enable Remote Logging ....... ON
+   Remote log server ........... 10.10.10.13:514
+   Remote Syslog Contents ...... Everything (ou Firewall + System events)
+
+--------------------------------------------------------------------
+4) REGRA DE FIREWALL PARA O AGENTE (pfSense)
+   Firewall -> Rules -> OPT2 (laboratório), ACIMA da regra de bloqueio
+--------------------------------------------------------------------
+   Action ...... Pass
+   Interface ... OPT2
+   Protocol .... TCP
+   Source ...... OPT2 subnets
+   Destination . 10.10.10.13
+   Dest port ... 1514 - 1515   (1515 = registo/enrollment, 1514 = comunicação)
+   Descrição ... Permitir agente Wazuh para o SIEM
+   # Mantém a política deny-by-default: abre SÓ as portas necessárias.
+
+--------------------------------------------------------------------
+5) INSTALAR O AGENTE (na Kali; base Debian, pacote DEB amd64)
+--------------------------------------------------------------------
+   wget https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.14.8-1_amd64.deb
+   sudo WAZUH_MANAGER='10.10.10.13' WAZUH_AGENT_NAME='kali-lab' dpkg -i ./wazuh-agent_4.14.8-1_amd64.deb
+   sudo systemctl daemon-reload
+   sudo systemctl enable wazuh-agent
+   sudo systemctl start wazuh-agent
+   # Verificar: Agents management -> Endpoints -> estado "active" (verde)
+
+--------------------------------------------------------------------
+6) TESTE DE DETEÇÃO (gera um alerta real)
+--------------------------------------------------------------------
+   # A partir do host, tentativas de SSH falhadas:
+   ssh naoexiste@10.10.10.13     (password errada, repetir 3-4x)
+   # No dashboard -> Explore -> Discover, pesquisar: sshd
+   # Resultado: alerta brute-force, rule.level 10, MITRE ATT&CK T1110
